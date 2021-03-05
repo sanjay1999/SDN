@@ -3,7 +3,7 @@ from ryu.controller import ofp_event
 from ryu.controller.handler import set_ev_cls, CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet, ethernet, ether_types
-# from ryu.lib import hub
+from ryu.lib import hub
 
 from ryu.topology import event #, switches
 # from ryu.topology.api import get_switch, get_link, get_all_switch
@@ -16,25 +16,42 @@ class SimpleSwitch13(app_manager.RyuApp):
 
     def __init__(self, *args, **kwargs):
         super(SimpleSwitch13, self).__init__(*args, **kwargs)
+        
         self.mac_to_port = {}
+    
         self.switches = {}
         self.graph = nx.DiGraph()
-        self.switch_intime = {}
-        self.switch_outtime = {}
-        self.sin = {}
-        self.sout = {}
-        # self.discover_thread = hub.spawn(self._discover)
         
-    # def _discover(self):
-    #     while True:
-    #         self.get_topology_data(None)
-    #         hub.sleep(10)
+        self.switch_delays = {}
+        self.link_delays = {}
+
+        # *** Running the _calc_delay() in a separate thread *** 
+        self.discover_thread = hub.spawn(self._calc_delay)
+        
+    def _calc_delay(self):
+        # *** Running get_delay_data() every 10s ***
+        while True:
+            self.get_delay_data()
+            hub.sleep(10)
+
+    def get_delay_data(self):
+        print("Running get_delay_data() .....")
+        for edge in self.graph.edges():
+            datapath = self.graph.node[edge[0]]['data']
+            src_dpid = edge[0]
+            dst_dpid = edge[1]
+            src_port = self.graph[edge[0]][edge[1]]['port']
+            # print(datapath, src_dpid, dst_dpid, src_port)
+            
+            # *** Sending packet out to measure the delay between the link **  
+            self.send_packet(dp=datapath, src=src_dpid, dst=dst_dpid, out_port=src_port)
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
         datapath = ev.msg.datapath
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
+        dpid = datapath.id
 
         # install table-miss flow entry
         match = parser.OFPMatch()
@@ -44,16 +61,15 @@ class SimpleSwitch13(app_manager.RyuApp):
         
         req = parser.OFPPortStatsRequest(datapath, 0, ofproto.OFPP_ANY)
         datapath.send_msg(req)
-        self.sin[datapath.id] = time.time()
+        self.switch_delays[dpid] = time.time()
         
         self.logger.info("Registered switch with dpid=%s", datapath.id)
 
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def port_stats_reply_handler(self, ev):
         dpid = ev.msg.datapath.id
-        self.sout[dpid] = time.time()
-        delay = self.sout[dpid] - self.sin[dpid]
-        print("s" + str(dpid) + " to controller = " + str(delay))
+        self.switch_delays[dpid] = time.time() - self.switch_delays[dpid]
+        print("s" + str(dpid) + " to controller = " + str(self.switch_delays[dpid]))
 
     def add_flow(self, datapath, priority, match, actions, buffer_id=None):
         ofproto = datapath.ofproto
@@ -76,7 +92,6 @@ class SimpleSwitch13(app_manager.RyuApp):
     @set_ev_cls(event.EventSwitchEnter)
     def get_switch_enter(self, ev):
         switch = ev.switch
-        # print(switch.to_dict())
         dp = switch.dp
         dpid = switch.dp.id
         self.graph.add_node(dpid, data=dp)
@@ -85,13 +100,9 @@ class SimpleSwitch13(app_manager.RyuApp):
     
     def send_packet(self, dp, src, dst, out_port):
         ethertype = 0x08fc
-        # dst = self.macaddr(i)
-        # src = self.macaddr(l) 
-        e = ethernet.ethernet(src='00:00:00:00:00:0'+str(src), dst='00:00:00:00:00:0'+str(dst), ethertype=ethertype)
-        # u = udp.udp(src_port=src, dst_port=dst, total_length=0, csum=0)                
+        e = ethernet.ethernet(src='00:00:00:00:00:0'+str(src), dst='00:00:00:00:00:0'+str(dst), ethertype=ethertype)            
         pkt = packet.Packet()
         pkt.add_protocol(e)
-        # pkt.add_protocol(u)
         pkt.add_protocol(time.time())
         pkt.serialize()
 
@@ -103,11 +114,10 @@ class SimpleSwitch13(app_manager.RyuApp):
             datapath=dp, buffer_id=ofproto.OFP_NO_BUFFER,
             in_port=ofproto.OFPP_CONTROLLER,
             actions=action, data=pkt.data)
-        # print("Sending packet out")
-        # print(dp)
+
         dp.send_msg(out)
-        print("Packet out sent for (" + str(src) + "," + str(dst) +") via port " + str(out_port))
-        self.switch_intime[(src, dst)] = time.time()
+        self.link_delays[(src,dst)] = time.time()
+        # print("Packet out sent for (" + str(src) + "," + str(dst) +") via port " + str(out_port))
 
     @set_ev_cls(event.EventLinkAdd)
     def get_link_add(self, ev):
@@ -115,20 +125,13 @@ class SimpleSwitch13(app_manager.RyuApp):
         src_dpid = link.src.dpid
         dst_dpid = link.dst.dpid
         src_port = link.src.port_no
-        print("Link added: {" + str(src_dpid) + " -> " + str(dst_dpid) + " from port:" + str(src_port) + "}")
-        self.graph.add_edge(src_dpid, dst_dpid, data={'port': src_port})
-        # print(self.graph.edges(data=True))
-        datapath = self.graph.node[src_dpid]['data']
-        # print("Datapath = ", datapath)
-        # if src_dpid == 2 and dst_dpid == 1:
-        self.send_packet(dp=datapath, src=src_dpid, dst=dst_dpid, out_port=src_port)
 
-        # switch_list = get_switch(self, None)
-        # switches = [switch.dp.id for switch in switch_list]
-        # links_list = get_link(self, None)
-        # links=[(link.src.dpid,link.dst.dpid,{'port':link.src.port_no}) for link in links_list]
-        # print(switches)
-        # print(links)
+        print("Link added: {" + str(src_dpid) + " -> " + str(dst_dpid) + " from port:" + str(src_port) + "}")
+        
+        self.graph.add_edge(src_dpid, dst_dpid, port=src_port)
+        datapath = self.graph.node[src_dpid]['data']
+
+        # self.send_packet(dp=datapath, src=src_dpid, dst=dst_dpid, out_port=src_port)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -155,21 +158,23 @@ class SimpleSwitch13(app_manager.RyuApp):
 
         dpid = datapath.id
         self.mac_to_port.setdefault(dpid, {})
-
-        # print("DATAPATH")
-        # print(datapath)
         
-        self.logger.info("Packet in %s %s %s %s %s", dpid, src, dst, in_port, eth.ethertype)
         if eth.ethertype == 0x08fc:
             src_dpid = int(src[-1:])
             dst_dpid = int(dst[-1:])
-            self.switch_outtime[(src_dpid, dst_dpid)] = time.time()
-            d1 = self.sout[src_dpid] - self.sin[src_dpid]
-            d2 = self.sout[dst_dpid] - self.sin[dst_dpid]
-            print(self.switch_outtime[(src_dpid, dst_dpid)] - self.switch_intime[(src_dpid, dst_dpid)])
-            delay = (self.switch_outtime[(src_dpid, dst_dpid)] - self.switch_intime[(src_dpid, dst_dpid)] - (d1/2) - (d2/2)) * 1000
-            print("delay " + str(src_dpid) + " -> " + str(dst_dpid) + " = " + str(delay))
+
+            delay_src = self.switch_delays[src_dpid]
+            delay_dst = self.switch_delays[dst_dpid]
+
+            self.link_delays[(src_dpid, dst_dpid)] = (time.time() - self.link_delays[(src_dpid, dst_dpid)] - delay_dst/2 + delay_src/2) * 1000
+            
+            # print("delay " + str(src_dpid) + " -> " + str(dst_dpid) + " = " + str(self.link_delays[(src_dpid, dst_dpid)]) + "s")
+            self.graph[src_dpid][dst_dpid]['delay'] = self.link_delays[(src_dpid, dst_dpid)]
+            # self.graph[dst_dpid][src_dpid]['delay'] = self.link_delays[(src_dpid, dst_dpid)]
+            print(self.link_delays)
             return
+
+        self.logger.info("Packet in %s %s %s %s %s", dpid, src, dst, in_port, eth.ethertype)
 
         # print(pkt.get_protocols(time))
         # learn a mac address to avoid FLOOD next time.
