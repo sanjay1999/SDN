@@ -21,26 +21,28 @@ def CustomTopo():
     h3 = net.addHost('h3')
     h4 = net.addHost('h4')
     h5 = net.addHost('h5')
-    h6 = net.addHost('h6')
-
+    
     # Adding switches
     info( '*** Adding switches ***\n')
     s1 = net.addSwitch('s1') # s1 = net.addSwitch('s1', cls=UserSwitch) to run CPqD switch
     s2 = net.addSwitch('s2')
     s3 = net.addSwitch('s3')
-
+    s4 = net.addSwitch('s4')
+    s5 = net.addSwitch('s5')
+    
     # Adding links
     info( '*** Adding links ***\n')
     net.addLink(h1, s1, delay='10ms')
     net.addLink(h2, s2, delay='10ms')
     net.addLink(h3, s3, delay='10ms')
-    net.addLink(h4, s3, delay='20ms')
-    net.addLink(h5, s3, delay='20ms')
-    net.addLink(h6, s3, delay='20ms')
+    net.addLink(h4, s4, delay='20ms')
+    net.addLink(h5, s5, delay='20ms')
 
     net.addLink(s1, s2, delay='100ms')
-    # net.addLink(s1, s3, delay='10ms')
     net.addLink(s2, s3, delay='10ms')
+    net.addLink(s3, s4, delay='10ms')
+    net.addLink(s4, s5, delay='10ms')
+    net.addLink(s1, s5, delay='10ms')
     
     # Start all the devices
     net.start()

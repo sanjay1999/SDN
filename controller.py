@@ -2,7 +2,7 @@ from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import set_ev_cls, CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.ofproto import ofproto_v1_3
-from ryu.lib.packet import packet, ethernet, ether_types
+from ryu.lib.packet import packet, ethernet, ether_types, ipv4, arp
 from ryu.lib import hub
 
 from ryu.topology import event #, switches
@@ -25,8 +25,11 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.switch_delays = {}
         self.link_delays = {}
 
+        self.hosts = {}
+
         # *** Running the _calc_delay() in a separate thread *** 
-        self.discover_thread = hub.spawn(self._calc_delay)
+        self.discover_delays = hub.spawn(self._calc_delay)
+        self.discover_hosts = hub.spawn(self._init_hosts)
         
     def _calc_delay(self):
         # *** Running get_delay_data() every 10s ***
@@ -34,6 +37,15 @@ class SimpleSwitch13(app_manager.RyuApp):
             self.get_delay_data()
             hub.sleep(10)
 
+    def _init_hosts(self):
+        hub.sleep(10)
+        print("Getting hosts....")
+        hosts = get_all_host(self)
+        for host in hosts:
+            print(host.ipv4, host.port.name, host.port.dpid, host.port.port_no)
+            self.hosts[host.mac] = {'dpid': host.port.dpid, 'port': host.port.port_no}
+        print(self.hosts)
+    
     def get_delay_data(self):
         print("Running get_delay_data() .....")
         for edge in self.graph.edges():
@@ -45,10 +57,6 @@ class SimpleSwitch13(app_manager.RyuApp):
             
             # *** Sending packet out to measure the delay between the link **  
             self.send_packet(dp=datapath, src=src_dpid, dst=dst_dpid, out_port=src_port)
-        
-        hosts = get_all_host(self)
-        for host in hosts:
-            print(host.mac, host.port.name, host.port.dpid, host.port.port_no)
 
     def send_packet(self, dp, src, dst, out_port):
         ethertype = 0x08fc
@@ -152,6 +160,8 @@ class SimpleSwitch13(app_manager.RyuApp):
 
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocols(ethernet.ethernet)[0]
+        ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
+        arp_pkt = pkt.get_protocol(arp.arp)
 
         # ignore lldp packet
         if eth.ethertype == ether_types.ETH_TYPE_LLDP or eth.ethertype == ether_types.ETH_TYPE_IPV6:
@@ -181,34 +191,45 @@ class SimpleSwitch13(app_manager.RyuApp):
 
         self.logger.info("Packet in %s %s %s %s %s", dpid, src, dst, in_port, eth.ethertype)
 
-        # print(pkt.get_protocols(time))
+        if isinstance(arp_pkt, arp.arp):
+            print("ARP Packet......")
+
+        if isinstance(ipv4_pkt, ipv4.ipv4):
+            print("IPV4 Packet......")
+            print(ipv4_pkt)
+            host_info = self.hosts[dst]
+            print("Host info", host_info)
+            print("Path from : " + str(dpid) + " -> " + str(host_info['dpid']))
+            print(nx.shortest_path(self.graph,source=dpid,target=host_info['dpid'], weight='delay'))
+
+
         # learn a mac address to avoid FLOOD next time.
-        # if not src in self.mac_to_port[dpid]:
-        #     self.mac_to_port[dpid][src] = in_port
-        #     out_port = ofproto.OFPP_FLOOD
-        #     actions = [parser.OFPActionOutput(out_port)]
-        # else:
-        #     if self.mac_to_port[dpid][src] != in_port:
-        #         out_port = -1;
-        #         actions = []
-        #     else:
-        #         out_port = ofproto.OFPP_FLOOD
-        #         actions = [parser.OFPActionOutput(out_port)]
+        if not src in self.mac_to_port[dpid]:
+            self.mac_to_port[dpid][src] = in_port
+            out_port = ofproto.OFPP_FLOOD
+            actions = [parser.OFPActionOutput(out_port)]
+        else:
+            if self.mac_to_port[dpid][src] != in_port:
+                out_port = -1;
+                actions = []
+            else:
+                out_port = ofproto.OFPP_FLOOD
+                actions = [parser.OFPActionOutput(out_port)]
 
-        # # install a flow to avoid packet_in next time
-        # if out_port != ofproto.OFPP_FLOOD:
-        #     match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
-        #     # verify if we have a valid buffer_id, if yes avoid to send both flow_mod & packet_out
-        #     if msg.buffer_id != ofproto.OFP_NO_BUFFER:
-        #         self.add_flow(datapath, 1, match, actions, msg.buffer_id)
-        #         return
-        #     else:
-        #         self.add_flow(datapath, 1, match, actions)
+        # install a flow to avoid packet_in next time
+        if out_port != ofproto.OFPP_FLOOD:
+            match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
+            # verify if we have a valid buffer_id, if yes avoid to send both flow_mod & packet_out
+            if msg.buffer_id != ofproto.OFP_NO_BUFFER:
+                self.add_flow(datapath, 1, match, actions, msg.buffer_id)
+                return
+            else:
+                self.add_flow(datapath, 1, match, actions)
 
-        # data = None
-        # if msg.buffer_id == ofproto.OFP_NO_BUFFER:
-        #     data = msg.data
+        data = None
+        if msg.buffer_id == ofproto.OFP_NO_BUFFER:
+            data = msg.data
 
-        # out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
-        #                           in_port=in_port, actions=actions, data=data)
-        # datapath.send_msg(out)
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
+                                  in_port=in_port, actions=actions, data=data)
+        datapath.send_msg(out)
