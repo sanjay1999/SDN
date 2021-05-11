@@ -33,7 +33,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.port_stats = {}
         self.port_speed = {}
 
-        self.monitor_time = 5
+        self.monitor_time = 2
 
         # *** Running the _calc_delay() in a separate thread *** 
         self.discover_delays = hub.spawn(self._calc_delay)
@@ -43,10 +43,12 @@ class SimpleSwitch13(app_manager.RyuApp):
     def _calc_delay(self):
         # *** Running get_delay_data() every 10s ***
         hub.sleep(10)
-        self.get_delay_data()
-        # while True:
-            # self.get_delay_data()
-            # hub.sleep(10)
+        print("** Estimated delay of links **")
+        while True:
+            for (u, v) in self.link_delays:
+                print("({}, {}) = {}".format(u, v, self.link_delays[(u, v)]))
+            self.get_delay_data()
+            hub.sleep(10)
 
     def _calc_bandwidth(self):
         
@@ -54,6 +56,7 @@ class SimpleSwitch13(app_manager.RyuApp):
             hub.sleep(self.monitor_time)
             # print(self.port_speed)
             print(self.free_bandwidth)
+            print("Running bandwidth estimation")
             for u, node in self.graph.nodes(data=True):
                 datapath = node['data']
                 ofproto = datapath.ofproto
@@ -67,7 +70,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         print("Getting hosts....")
         hosts = get_all_host(self)
         for host in hosts:
-            # print(host.ipv4, host.port.name, host.port.dpid, host.port.port_no)
             self.hosts[host.mac] = {'dpid': host.port.dpid, 'port': host.port.port_no}
         # print(self.hosts)
     
@@ -78,7 +80,6 @@ class SimpleSwitch13(app_manager.RyuApp):
             src_dpid = edge[0]
             dst_dpid = edge[1]
             src_port = self.graph[edge[0]][edge[1]]['port']
-            # print(datapath, src_dpid, dst_dpid, src_port)
             
             # *** Sending packet out to measure the delay between the link **  
             self.send_packet(dp=datapath, src=src_dpid, dst=dst_dpid, out_port=src_port)
@@ -112,7 +113,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         port_state = self.port_features.get(dpid).get(port_no)
         if port_state:
             capacity = port_state[2]
-            print("Getting free bw", capacity, speed)
+            # print("Getting free bw", capacity, speed)
             curr_bw = self._get_free_bw(capacity, speed)
             self.free_bandwidth[dpid].setdefault(port_no, None)
             self.free_bandwidth[dpid][port_no] = curr_bw
@@ -156,7 +157,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         in_port = msg.match['in_port']
 
         out_port = self.mac_to_port[datapath.id].get(eth_pkt.dst)
-        print("Out port = ", out_port)
         if out_port is not None:
             match = parser.OFPMatch(in_port=in_port, eth_dst=eth_pkt.dst,
                                     eth_type=eth_pkt.ethertype)
@@ -243,8 +243,10 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.switch_delays[dpid] = time.time() - self.switch_delays[dpid]
         self.port_features[dpid] = {}
         for p in ev.msg.body:
-            print("Port {}: curr_speed={}, max_speed={}, supported={}, ".format(p.port_no, p.curr_speed, p.max_speed, p.supported))
-            self.port_features[dpid][p.port_no] = (p.config, p.state, p.curr_speed)
+            # print("Port {}: curr_speed={}, max_speed={}, supported={}, ".format(p.port_no, p.curr_speed, p.max_speed, p.supported))
+            
+            # self.port_features[dpid][p.port_no] = (p.config, p.state, p.curr_speed)
+            self.port_features[dpid][p.port_no] = (p.config, p.state, 10000)
 
         # print("s" + str(dpid) + " to controller = " + str(self.switch_delays[dpid]))
 
@@ -281,7 +283,7 @@ class SimpleSwitch13(app_manager.RyuApp):
                     self.port_stats[key][-1][0] + self.port_stats[key][-1][1],
                     pre, period)
 
-                print(dpid, port_no, speed)
+                # print(dpid, port_no, speed)
 
                 self._save_stats(self.port_speed, key, speed, 5)
                 self._save_freebandwidth(dpid, port_no, speed)
@@ -347,10 +349,7 @@ class SimpleSwitch13(app_manager.RyuApp):
             self.link_delays[(src_dpid, dst_dpid)] = (time.time() - self.link_delays[(src_dpid, dst_dpid)] - delay_dst/2 + delay_src/2) * 1000
             
             self.graph[src_dpid][dst_dpid]['delay'] = self.link_delays[(src_dpid, dst_dpid)]
-            
-            # print("delay " + str(src_dpid) + " -> " + str(dst_dpid) + " = " + str(self.link_delays[(src_dpid, dst_dpid)]) + "s")
-            # self.graph[dst_dpid][src_dpid]['delay'] = self.link_delays[(src_dpid, dst_dpid)]
-            # print(self.link_delays)
+
             return
 
         self.logger.info("Packet in %s %s %s %s %s", dpid, src, dst, in_port, eth.ethertype)
@@ -392,31 +391,3 @@ class SimpleSwitch13(app_manager.RyuApp):
                 return
             
             self.arp_forwarding(msg, arp_pkt.src_ip, arp_pkt.dst_ip, eth)
-            # # learn a mac address to avoid FLOOD next time.
-            # self.mac_to_port[dpid][src] = in_port
-
-            # if dst in self.mac_to_port[dpid]:
-            #     out_port = self.mac_to_port[dpid][dst]
-            # else:
-            #     out_port = ofproto.OFPP_FLOOD
-
-            # actions = [parser.OFPActionOutput(out_port)]
-
-            # # install a flow to avoid packet_in next time
-            # if out_port != ofproto.OFPP_FLOOD:
-            #     match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
-            #     # verify if we have a valid buffer_id, if yes avoid to send both
-            #     # flow_mod & packet_out
-            #     if msg.buffer_id != ofproto.OFP_NO_BUFFER:
-            #         self.add_flow(datapath, 0, 1, match, actions, msg.buffer_id)
-            #         return
-            #     else:
-            #         self.add_flow(datapath, 0, 1, match, actions)
-            # data = None
-            # if msg.buffer_id == ofproto.OFP_NO_BUFFER:
-            #     data = msg.data
-
-            # out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
-            #                         in_port=in_port, actions=actions, data=data)
-            # datapath.send_msg(out)
-
