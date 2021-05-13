@@ -42,7 +42,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         
     def _calc_delay(self):
         # *** Running get_delay_data() every 10s ***
-        hub.sleep(10)
+        hub.sleep(5)
         print("** Estimated delay of links **")
         while True:
             for (u, v) in self.link_delays:
@@ -328,7 +328,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         eth = pkt.get_protocols(ethernet.ethernet)[0]
         ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
         arp_pkt = pkt.get_protocol(arp.arp)
-
+        # print(ipv4_pkt, arp_pkt)
         # ignore lldp packet
         if eth.ethertype == ether_types.ETH_TYPE_LLDP or eth.ethertype == ether_types.ETH_TYPE_IPV6:
             return
@@ -351,7 +351,8 @@ class SimpleSwitch13(app_manager.RyuApp):
             self.graph[src_dpid][dst_dpid]['delay'] = self.link_delays[(src_dpid, dst_dpid)]
 
             return
-
+        
+        # print("PACKET IN")
         self.logger.info("Packet in %s %s %s %s %s", dpid, src, dst, in_port, eth.ethertype)
 
         if isinstance(ipv4_pkt, ipv4.ipv4):

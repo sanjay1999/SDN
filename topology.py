@@ -41,6 +41,8 @@ def CustomTopo():
 
     # Start all the devices
     net.start()
+
+    # h1.cmd('python3 send_packet.py {} {} {}'.format('10.0.0.1','10.0.0.2',"Testing Scapy"))
     
     CLI(net)
 
