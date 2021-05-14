@@ -32,6 +32,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.free_bandwidth = {}
         self.port_stats = {}
         self.port_speed = {}
+        self.switch_ports = {}
 
         self.monitor_time = 2
 
@@ -51,11 +52,11 @@ class SimpleSwitch13(app_manager.RyuApp):
             hub.sleep(10)
 
     def _calc_bandwidth(self):
-        
+        hub.sleep(5)
         while True:
             hub.sleep(self.monitor_time)
             # print(self.port_speed)
-            print(self.free_bandwidth)
+            # print(self.free_bandwidth)
             print("Running bandwidth estimation")
             for u, node in self.graph.nodes(data=True):
                 datapath = node['data']
@@ -64,7 +65,10 @@ class SimpleSwitch13(app_manager.RyuApp):
 
                 req = parser.OFPPortStatsRequest(datapath, 0, ofproto.OFPP_ANY)
                 datapath.send_msg(req)
-
+            for u, v, att in self.graph.edges(data=True):
+                if 'bw' in att:
+                    print("{} -> {} : {}".format(u, v, att['bw']))
+                
     def _init_hosts(self):
         hub.sleep(5)
         print("Getting hosts....")
@@ -117,6 +121,9 @@ class SimpleSwitch13(app_manager.RyuApp):
             curr_bw = self._get_free_bw(capacity, speed)
             self.free_bandwidth[dpid].setdefault(port_no, None)
             self.free_bandwidth[dpid][port_no] = curr_bw
+            # print("Here", self.switch_ports[dpid][port_no])
+            if port_no in self.switch_ports[dpid]:
+                self.graph[dpid][self.switch_ports[dpid][port_no]]['bw'] = curr_bw
         else:
             self.logger.info("Fail in getting port state")
 
@@ -244,7 +251,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.port_features[dpid] = {}
         for p in ev.msg.body:
             # print("Port {}: curr_speed={}, max_speed={}, supported={}, ".format(p.port_no, p.curr_speed, p.max_speed, p.supported))
-            
             # self.port_features[dpid][p.port_no] = (p.config, p.state, p.curr_speed)
             self.port_features[dpid][p.port_no] = (p.config, p.state, 10000)
 
@@ -283,8 +289,6 @@ class SimpleSwitch13(app_manager.RyuApp):
                     self.port_stats[key][-1][0] + self.port_stats[key][-1][1],
                     pre, period)
 
-                # print(dpid, port_no, speed)
-
                 self._save_stats(self.port_speed, key, speed, 5)
                 self._save_freebandwidth(dpid, port_no, speed)
     
@@ -303,6 +307,10 @@ class SimpleSwitch13(app_manager.RyuApp):
         src_dpid = link.src.dpid
         dst_dpid = link.dst.dpid
         src_port = link.src.port_no
+        
+        if src_dpid not in self.switch_ports:
+            self.switch_ports[src_dpid] = {}
+        self.switch_ports[src_dpid][src_port] = dst_dpid
 
         print("Link added: {" + str(src_dpid) + " -> " + str(dst_dpid) + " from port:" + str(src_port) + "}")
         
@@ -310,6 +318,21 @@ class SimpleSwitch13(app_manager.RyuApp):
         datapath = self.graph.node[src_dpid]['data']
 
         # self.send_packet(dp=datapath, src=src_dpid, dst=dst_dpid, out_port=src_port)
+    
+    def get_delay(self, N, u, v, c, X):
+        return N.edges[u, v]['delay']
+
+    def get_bw(self, N, u, v, c, X):
+        return c / N.edges[u, v]['bw']
+
+    def get_new_delay(self, N, u, v, c, X):
+        return math.ceil(X * N.edges[u, v]['delay'] / c)
+
+    def get_new_bw(self, N, u, v, c, X):
+        return math.ceil(X * get_bw(N, u, v, c, X) / c)
+
+    def find_path(self, src, dst):
+        return nx.shortest_path(self.graph,source=src,target=dst, weight='delay')
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -328,7 +351,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         eth = pkt.get_protocols(ethernet.ethernet)[0]
         ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
         arp_pkt = pkt.get_protocol(arp.arp)
-        # print(ipv4_pkt, arp_pkt)
+
         # ignore lldp packet
         if eth.ethertype == ether_types.ETH_TYPE_LLDP or eth.ethertype == ether_types.ETH_TYPE_IPV6:
             return
@@ -352,12 +375,12 @@ class SimpleSwitch13(app_manager.RyuApp):
 
             return
         
-        # print("PACKET IN")
         self.logger.info("Packet in %s %s %s %s %s", dpid, src, dst, in_port, eth.ethertype)
 
         if isinstance(ipv4_pkt, ipv4.ipv4):
             print("IPV4 Packet......")
             print(ipv4_pkt)
+            print("Payload = ", pkt.protocols[-1])
             host_info = self.hosts[dst]
             print("Host info", host_info)
             print("Path from : " + str(dpid) + " -> " + str(host_info['dpid']))
@@ -367,7 +390,7 @@ class SimpleSwitch13(app_manager.RyuApp):
             else:
                 print("Finding shortest path")
                 print(list(nx.all_simple_paths(self.graph,source=dpid,target=host_info['dpid'])))
-                shortest_path = nx.shortest_path(self.graph,source=dpid,target=host_info['dpid'], weight='delay')
+                shortest_path = self.find_path(dpid, host_info['dpid'])
                 out_port = self.graph[shortest_path[0]][shortest_path[1]]['port']
                 print(shortest_path)
 
