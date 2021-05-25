@@ -2,7 +2,7 @@ from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import set_ev_cls, CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.ofproto import ofproto_v1_3
-from ryu.lib.packet import packet, ethernet, ether_types, ipv4, arp
+from ryu.lib.packet import in_proto, packet, ethernet, ether_types, ipv4, arp
 from ryu.lib import hub
 
 from ryu.topology import event #, switches
@@ -11,6 +11,7 @@ from operator import attrgetter
 
 import networkx as nx
 import time
+import math
 
 class SimpleSwitch13(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -33,8 +34,9 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.port_stats = {}
         self.port_speed = {}
         self.switch_ports = {}
+        self.max_bws = {}
 
-        self.monitor_time = 2
+        self.monitor_time = 1
 
         # *** Running the _calc_delay() in a separate thread *** 
         self.discover_delays = hub.spawn(self._calc_delay)
@@ -52,11 +54,20 @@ class SimpleSwitch13(app_manager.RyuApp):
             hub.sleep(10)
 
     def _calc_bandwidth(self):
+        with open('bw.txt', 'r') as f:
+            r = f.readlines()
+            for l in r:
+                l = l.replace('\n', '').split('-')
+                x = l[0].split(',')
+                x[0], x[1], l[1] = int(x[0]), int(x[1]), int(l[1]) * 1000
+                key1, key2 = (x[0], x[1]), (x[1], x[0])
+                self.max_bws[key1] = l[1]
+                self.max_bws[key2] = l[1]
+            print(self.max_bws)
+
         hub.sleep(5)
         while True:
             hub.sleep(self.monitor_time)
-            # print(self.port_speed)
-            # print(self.free_bandwidth)
             print("Running bandwidth estimation")
             for u, node in self.graph.nodes(data=True):
                 datapath = node['data']
@@ -75,7 +86,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         hosts = get_all_host(self)
         for host in hosts:
             self.hosts[host.mac] = {'dpid': host.port.dpid, 'port': host.port.port_no}
-        # print(self.hosts)
     
     def get_delay_data(self):
         print("Running get_delay_data() .....")
@@ -95,7 +105,6 @@ class SimpleSwitch13(app_manager.RyuApp):
             return 0
 
     def _get_free_bw(self, capacity, speed):
-        # BW:Mbit/s
         return max(capacity / 10**3 - (speed * 8) / 10**6, 0)
 
     def _get_time(self, sec, nsec):
@@ -114,18 +123,15 @@ class SimpleSwitch13(app_manager.RyuApp):
 
     def _save_freebandwidth(self, dpid, port_no, speed):
         # Calculate free bandwidth of port and save it.
-        port_state = self.port_features.get(dpid).get(port_no)
-        if port_state:
-            capacity = port_state[2]
-            # print("Getting free bw", capacity, speed)
+        # port_state = self.port_features.get(dpid).get(port_no)
+        # if port_state:
+        if port_no in self.switch_ports[dpid]:
+            # capacity = port_state[2]
+            capacity = self.max_bws[(dpid, self.switch_ports[dpid][port_no])]
             curr_bw = self._get_free_bw(capacity, speed)
             self.free_bandwidth[dpid].setdefault(port_no, None)
             self.free_bandwidth[dpid][port_no] = curr_bw
-            # print("Here", self.switch_ports[dpid][port_no])
-            if port_no in self.switch_ports[dpid]:
-                self.graph[dpid][self.switch_ports[dpid][port_no]]['bw'] = curr_bw
-        else:
-            self.logger.info("Fail in getting port state")
+            self.graph[dpid][self.switch_ports[dpid][port_no]]['bw'] = curr_bw
 
     def _build_packet_out(self, datapath, buffer_id, src_port, dst_port, data):
         actions = []
@@ -203,7 +209,6 @@ class SimpleSwitch13(app_manager.RyuApp):
 
         dp.send_msg(out)
         self.link_delays[(src,dst)] = time.time()
-        # print("Packet out sent for (" + str(src) + "," + str(dst) +") via port " + str(out_port))
 
     def add_flow(self, datapath, hard_timeout, priority, match, actions, buffer_id=None):
         ofproto = datapath.ofproto
@@ -250,7 +255,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.switch_delays[dpid] = time.time() - self.switch_delays[dpid]
         self.port_features[dpid] = {}
         for p in ev.msg.body:
-            # print("Port {}: curr_speed={}, max_speed={}, supported={}, ".format(p.port_no, p.curr_speed, p.max_speed, p.supported))
             # self.port_features[dpid][p.port_no] = (p.config, p.state, p.curr_speed)
             self.port_features[dpid][p.port_no] = (p.config, p.state, 10000)
 
@@ -284,7 +288,6 @@ class SimpleSwitch13(app_manager.RyuApp):
                     period = self._get_period(tmp[-1][3], tmp[-1][4],
                                               tmp[-2][3], tmp[-2][4])
 
-                # print(self.port_stats[key][-1][0] + self.port_stats[key][-1][1], pre, period)
                 speed = self._get_speed(
                     self.port_stats[key][-1][0] + self.port_stats[key][-1][1],
                     pre, period)
@@ -299,7 +302,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         dpid = switch.dp.id
         self.graph.add_node(dpid, data=dp)
         print("Switch added with dpid=" + str(switch.dp.id))
-        # print(list(self.graph.nodes(data=True)))
 
     @set_ev_cls(event.EventLinkAdd)
     def get_link_add(self, ev):
@@ -317,22 +319,70 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.graph.add_edge(src_dpid, dst_dpid, port=src_port)
         datapath = self.graph.node[src_dpid]['data']
 
-        # self.send_packet(dp=datapath, src=src_dpid, dst=dst_dpid, out_port=src_port)
-    
     def get_delay(self, N, u, v, c, X):
         return N.edges[u, v]['delay']
 
     def get_bw(self, N, u, v, c, X):
+        if N.edges[u, v]['bw'] == 0:
+            return 2**32 - 1
         return c / N.edges[u, v]['bw']
+    
+    def get_bcap(self, N, u, v, c, X):
+        bcap = 0
+        for u, v, att in N.edges(data=True):
+            bcap = max(bcap, self.get_bw(N, u, v, c, X))
+        bcap *= len(N.nodes())
+        return bcap
 
     def get_new_delay(self, N, u, v, c, X):
         return math.ceil(X * N.edges[u, v]['delay'] / c)
 
     def get_new_bw(self, N, u, v, c, X):
-        return math.ceil(X * get_bw(N, u, v, c, X) / c)
+        return math.ceil(X * self.get_bw(N, u, v, c, X) / c)
 
     def find_path(self, src, dst):
         return nx.shortest_path(self.graph,source=src,target=dst, weight='delay')
+
+    def MCP_Heustric(self, N, s, t, W1, W2, C1, C2, X):
+        d = {}
+        p = {}
+        V = N.nodes()
+        for i in V:
+            for j in range(0, C2 + 1):
+                d[(i, j)] = 2**32 - 1
+                p[(i, j)] = None
+                if(i == s):
+                    d[(i, j)] = 0
+        
+        for i in range(0, len(V) - 1):
+            for j in range(0, C2 + 1):
+                for u, v, att in N.edges(data=True):
+                    nj = j + W2(N, u, v, C2, X)
+                    nW1 = W1(N, u, v, C1, X)
+                    if nj <= C2 and d[(v, nj)] > d[(u, j)] + nW1:
+                        d[(v, nj)] = d[(u, j)] + nW1
+                        p[(v, nj)] = u
+
+        for i in range(0, C2 + 1):
+            if d[(t, i)] <= C1:
+                pn = None
+                done = False
+                current_node = t
+                path = []
+                while not done:
+                    if current_node == s:
+                        path.append(current_node)
+                        done = True
+                        break
+                    for j in range(0, C2 + 1):
+                        if p[(current_node, j)] != None:
+                            path.append(current_node)
+                            current_node = p[(current_node, j)]
+                            break
+                path = path[::-1]
+                return path
+        
+        return False
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -375,26 +425,36 @@ class SimpleSwitch13(app_manager.RyuApp):
 
             return
         
-        self.logger.info("Packet in %s %s %s %s %s", dpid, src, dst, in_port, eth.ethertype)
+        # self.logger.info("Packet in %s %s %s %s %s", dpid, src, dst, in_port, eth.ethertype)
 
         if isinstance(ipv4_pkt, ipv4.ipv4):
-            print("IPV4 Packet......")
-            print(ipv4_pkt)
-            print("Payload = ", pkt.protocols[-1])
+            # IPV4 Packet
             host_info = self.hosts[dst]
-            print("Host info", host_info)
-            print("Path from : " + str(dpid) + " -> " + str(host_info['dpid']))
-            if dpid == host_info['dpid']:
-                print("Reached last switch")
+            # print("Path from : " + str(dpid) + " -> " + str(host_info['dpid']))
+            if ipv4_pkt.proto == in_proto.IPPROTO_ICMP or ipv4_pkt.proto == in_proto.IPPROTO_TCP:
+                # ICMP/TCP Packet
+                path = self.find_path(dpid, host_info['dpid'])
+                if dpid == host_info['dpid']:
+                    out_port = host_info['port']
+                else:     
+                    out_port = self.graph[path[0]][path[1]]['port']
+            elif dpid == host_info['dpid']:
                 out_port = host_info['port']
             else:
-                print("Finding shortest path")
-                print(list(nx.all_simple_paths(self.graph,source=dpid,target=host_info['dpid'])))
-                shortest_path = self.find_path(dpid, host_info['dpid'])
-                out_port = self.graph[shortest_path[0]][shortest_path[1]]['port']
-                print(shortest_path)
-
-            print("Out_port = ", out_port)
+                payload = pkt.protocols[-1].split('|')[0].replace(' ', '').split(',')
+                shortest_path = self.MCP_Heustric(self.graph, dpid, host_info['dpid'], self.get_delay, self.get_new_bw, int(payload[0]), int(payload[1]), int(payload[1]))
+                if shortest_path == False:
+                    with open("logs/log_drop.txt", "a") as f:
+                        f.write("drop\n")
+                    # print("Drop packet")
+                    # path = self.find_path(dpid, host_info['dpid'])
+                    # if dpid == host_info['dpid']:
+                    #     out_port = host_info['port']
+                    # else:     
+                    #     out_port = self.graph[path[0]][path[1]]['port']
+                    return
+                else:
+                    out_port = self.graph[shortest_path[0]][shortest_path[1]]['port']
 
             data = None
             if msg.buffer_id == ofproto.OFP_NO_BUFFER:
@@ -409,9 +469,9 @@ class SimpleSwitch13(app_manager.RyuApp):
             return 
 
         if isinstance(arp_pkt, arp.arp):
-            print("ARP processing")
+            # Processing ARP request
             if self.mac_learning(dpid, eth.src, in_port) is False:
-                self.logger.info("ARP packet enter in different ports")
+                # self.logger.info("ARP packet enter in different ports")
                 return
             
             self.arp_forwarding(msg, arp_pkt.src_ip, arp_pkt.dst_ip, eth)

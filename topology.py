@@ -29,15 +29,15 @@ def CustomTopo():
     
     # Adding links
     info( '*** Adding links ***\n')
-    net.addLink(h1, s1, delay='1ms', bw=10)
-    net.addLink(h2, s5, delay='1ms', bw=10)
+    net.addLink(h1, s1, delay='10ms', bw=10)
+    net.addLink(h2, s5, delay='10ms', bw=10)
 
-    net.addLink(s1, s2, delay='2ms', bw=10)
-    net.addLink(s1, s3, delay='3ms', bw=10)
-    net.addLink(s2, s4, delay='1ms', bw=10)
-    net.addLink(s2, s5, delay='3ms', bw=10)
-    net.addLink(s3, s4, delay='2ms', bw=10)
-    net.addLink(s4, s5, delay='1ms', bw=10)
+    net.addLink(s1, s2, delay='20ms', bw=7)
+    net.addLink(s1, s3, delay='30ms', bw=10)
+    net.addLink(s2, s4, delay='10ms', bw=5)
+    net.addLink(s2, s5, delay='30ms', bw=10)
+    net.addLink(s3, s4, delay='20ms', bw=7)
+    net.addLink(s4, s5, delay='10ms', bw=6)
 
     # Start all the devices
     net.start()
